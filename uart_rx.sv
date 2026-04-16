@@ -1,4 +1,4 @@
-`timescale 1ns / 1ps
+`include "clock_mul.sv"
 
 module uart_rx (
     input clk,
@@ -10,36 +10,36 @@ module uart_rx (
 parameter SRC_FREQ = 76800;
 parameter BAUDRATE = 9600;
 
+// STATES: State of the state machine
 localparam DATA_BITS = 8;
-
 localparam 
     INIT = 0, 
     IDLE = 1,
     RX_DATA = 2,
     STOP = 3;
 
-// UART clock
+// CLOCK MULTIPLIER: Instantiate the clock multiplier
 wire uart_clk;
-
 clock_mul #(
     .SRC_FREQ(SRC_FREQ),
     .OUT_FREQ(BAUDRATE)
 ) clk_mul_inst (
-    .clk_in(clk),
-    .clk_out(uart_clk)
+    .src_clk(clk),
+    .out_clk(uart_clk)
 );
 
-// CDC signals
-reg rx_ready_uart = 0;
-reg rx_ready_sync1 = 0;
-reg rx_ready_sync2 = 0;
-
-// State machine regs
+// State machine registers
 reg [1:0] state = INIT;
 reg [2:0] bit_count = 0;
 reg [7:0] shift_reg = 0;
 
-// UART clock domain FSM
+// Internal ready flag in uart clock domain
+reg rx_ready_uart = 0;
+
+// CROSS CLOCK DOMAIN: Two-flip-flop synchronizer for rx_ready
+reg sync1 = 0, sync2 = 0;
+
+// STATE MACHINE: Use the UART clock to drive the state machine
 always @(posedge uart_clk) begin
     case (state)
         INIT: begin
@@ -47,7 +47,7 @@ always @(posedge uart_clk) begin
         end
 
         IDLE: begin
-            if (rx == 0) begin
+            if (rx == 1'b0) begin  // Start bit detected
                 bit_count <= 0;
                 state <= RX_DATA;
             end
@@ -55,11 +55,10 @@ always @(posedge uart_clk) begin
 
         RX_DATA: begin
             shift_reg[bit_count] <= rx;
-            if (bit_count == DATA_BITS - 1) begin
+            if (bit_count == DATA_BITS-1)
                 state <= STOP;
-            end else begin
+            else
                 bit_count <= bit_count + 1;
-            end
         end
 
         STOP: begin
@@ -70,17 +69,17 @@ always @(posedge uart_clk) begin
     endcase
 end
 
-// Clear pulse in UART domain
+// Clear the ready flag after one cycle
 always @(posedge uart_clk) begin
     if (rx_ready_uart)
         rx_ready_uart <= 0;
 end
 
-// CDC to source clock domain (1-cycle pulse)
+// Clock domain crossing for rx_ready
 always @(posedge clk) begin
-    rx_ready_sync1 <= rx_ready_uart;
-    rx_ready_sync2 <= rx_ready_sync1;
-    rx_ready <= rx_ready_sync1 & ~rx_ready_sync2;
+    sync1 <= rx_ready_uart;
+    sync2 <= sync1;
+    rx_ready <= sync1 & ~sync2;
 end
 
 endmodule
